@@ -6,4 +6,23 @@ venv/
 .idea/
 .vscode/
 .DS_Store
+
+# Secrets
 .env
+
+# Runtime data files
+memory_store.json
+mock_erp_submissions.json
+invoice_database.json
+ocr_debug_latest.txt
+mcp_tool_cache.json
+chatbot.db
+rag_chroma/
+
+# Pytest artifacts
+.pytest_cache/
+.pytest-local-temp/
+pytest-cache-files-*/
+
+# Notebook artifacts
+chatbot.ipy

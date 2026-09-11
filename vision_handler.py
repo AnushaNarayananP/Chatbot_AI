@@ -1,35 +1,23 @@
 import base64
-import json
-import os
 import re
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
+from openrouter_client import (
+    OpenRouterError,
+    format_user_facing_error,
+    get_env_value,
+    post_chat_completion,
+)
 
-OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
-MODEL_NAME = "nvidia/nemotron-nano-12b-v2-vl:free"
+
+MODEL_NAME = "google/gemini-2.5-flash"
+FALLBACK_MODEL_NAME = "anthropic/claude-sonnet-4"
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
-
-
-def _load_env_file():
-    env_path = Path(__file__).with_name(".env")
-    if not env_path.exists():
-        return
-
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
-_load_env_file()
+EMPTY_OCR_ERROR = (
+    "The OCR model returned no readable text. Try Gemini vision, "
+    "a clearer image, or another vision model."
+)
 
 
 def is_supported_image_file(file_name: str) -> bool:
@@ -96,6 +84,14 @@ def detect_vision_task(user_prompt: str) -> str:
         "document",
         "receipt",
         "text in this image",
+        "store data",
+        "save data",
+        "store invoice",
+        "save invoice",
+        "store invoice details",
+        "save invoice details",
+        "extract structured",
+        "structured data",
         "ocr",
         "handwritten",
         "signboard",
@@ -151,12 +147,34 @@ def build_vision_instruction(user_prompt: str, detected_language: str, task: str
         ),
     }
     task_instruction = task_prompts.get(task, task_prompts["analyze"])
-    user_intent = (user_prompt or "").strip()
-    if not user_intent:
-        user_intent = "Please analyze this image."
+    user_intent = (user_prompt or "").strip() or "Please analyze this image."
+    invoice_requested = any(
+        keyword in user_intent.lower()
+        for keyword in ("invoice", "bill", "receipt", "store data", "save data")
+    )
+    invoice_json_instruction = ""
+    if task == "ocr" and invoice_requested:
+        invoice_json_instruction = (
+            " If this is an invoice, after the readable text include one fenced JSON block "
+            "with this exact shape: "
+            '{"invoice_id":"","vendor":"","invoice_number":"","date":"","currency":"",'
+            '"items":[{"sr_no":0,"name":"","quantity":0,"rate":0.0,"total":0.0}],'
+            '"summary":{"subtotal":0.0,"tax":0.0,"total_amount":0.0}}. '
+            "Before the JSON, transcribe these invoice fields verbatim when visible: "
+            "Invoice No, Invoice Date, each product row, Subtotal/Taxable Value, "
+            "IGST/CGST/SGST tax amount, and Grand Total/Total. "
+            "For invoice_number, use only the value printed next to Invoice No / Invoice Number; "
+            "never use Challan No, E-Way Bill No, PAN, GSTIN, Transport ID, phone, or bank fields. "
+            "Transcribe the invoice item table rows exactly, especially columns like "
+            "Sr No, Name of Product / Service, Qty, Rate, and Taxable Value. "
+            "Use only values clearly visible in the invoice. Do not use address, PAN, GSTIN, "
+            "phone, bank, or terms lines as item names. Put each product/service row from the "
+            "invoice item table into items."
+        )
 
     return (
         f"{language_rule}{task_instruction} "
+        f"{invoice_json_instruction}"
         "Be concise, natural, and structured when helpful. "
         f"User prompt: {user_intent}"
     )
@@ -167,62 +185,102 @@ def call_openrouter_vision(
     image_data_url: str | None = None,
     image_url: str | None = None,
 ) -> dict:
-    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-    if not api_key:
-        return {"ok": False, "error": "Missing OPENROUTER_API_KEY in environment."}
-
     selected_image = image_data_url or image_url
     if not selected_image:
         return {"ok": False, "error": "No image was provided for vision analysis."}
 
-    payload = {
-        "model": os.environ.get("OPENROUTER_VISION_MODEL", MODEL_NAME),
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_prompt},
-                    {"type": "image_url", "image_url": {"url": selected_image}},
-                ],
-            }
-        ],
-    }
+    candidate_models = _resolve_openrouter_vision_models()
+    first_model = candidate_models[0]
+    last_error = None
+    for selected_model in candidate_models:
+        payload = {
+            "model": selected_model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {"type": "image_url", "image_url": {"url": selected_image}},
+                    ],
+                }
+            ],
+        }
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": os.environ.get("OPENROUTER_SITE_URL", "http://localhost:8501"),
-        "X-Title": os.environ.get("OPENROUTER_APP_NAME", "FriendlyBot"),
-    }
+        try:
+            response_dict = post_chat_completion(payload)
+        except OpenRouterError as error:
+            last_error = error
+            if selected_model != candidate_models[-1] and _is_retryable_vision_error(error):
+                continue
+            return {"ok": False, "error": format_user_facing_error(str(error))}
 
-    request = urllib.request.Request(
-        OPENROUTER_ENDPOINT,
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST",
+        if not _openrouter_response_has_readable_content(response_dict):
+            last_error = EMPTY_OCR_ERROR
+            if selected_model != candidate_models[-1]:
+                continue
+            return {"ok": False, "error": EMPTY_OCR_ERROR}
+
+        result = {
+            "ok": True,
+            "response": response_dict,
+            "provider": "openrouter",
+            "model": selected_model,
+        }
+        if selected_model != first_model:
+            result["fallback_from"] = first_model
+        return result
+
+    return {"ok": False, "error": format_user_facing_error(str(last_error))}
+
+
+def _resolve_openrouter_vision_models() -> list[str]:
+    primary_model = get_env_value("OPENROUTER_VISION_MODEL", MODEL_NAME)
+    fallback_models = _split_model_list(
+        get_env_value("OPENROUTER_VISION_FALLBACK_MODEL", FALLBACK_MODEL_NAME)
     )
+    models = [primary_model]
+    for model in fallback_models:
+        if model and model not in models:
+            models.append(model)
+    return models
 
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as error:
-        body = error.read().decode("utf-8", errors="replace")
-        return {
-            "ok": False,
-            "error": f"OpenRouter returned HTTP {error.code}. Details: {body}",
-        }
-    except urllib.error.URLError as error:
-        return {
-            "ok": False,
-            "error": f"OpenRouter request failed. Details: {error.reason}",
-        }
 
-    try:
-        response_dict = json.loads(body)
-    except json.JSONDecodeError:
-        return {"ok": False, "error": "OpenRouter returned invalid JSON."}
+def _split_model_list(value: str) -> list[str]:
+    return [model.strip() for model in re.split(r"[,;]", value or "") if model.strip()]
 
-    return {"ok": True, "response": response_dict}
+
+def _openrouter_response_has_readable_content(response_dict: dict) -> bool:
+    choices = response_dict.get("choices") or []
+    if not choices:
+        return False
+
+    content = choices[0].get("message", {}).get("content", "")
+    if isinstance(content, list):
+        return any(
+            isinstance(item, dict)
+            and item.get("type") == "text"
+            and str(item.get("text", "")).strip()
+            for item in content
+        )
+
+    return bool(str(content or "").strip())
+
+
+def _is_retryable_vision_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            '"code":429',
+            '"code": 429',
+            "temporarily rate-limited",
+            "rate-limited upstream",
+            "timed out",
+            "no endpoints found",
+            "temporarily unavailable",
+            "overloaded",
+        )
+    )
 
 
 def parse_vision_response(response_dict: dict) -> dict:
@@ -264,7 +322,7 @@ def parse_vision_response(response_dict: dict) -> dict:
             if isinstance(item, dict) and item.get("type") == "text"
         ).strip()
     else:
-        raw_text = str(content).strip()
+        raw_text = "" if content is None else str(content).strip()
 
     if not raw_text:
         return {
@@ -289,6 +347,8 @@ def parse_vision_response(response_dict: dict) -> dict:
             "answer": "",
         },
         "error": None,
+        "provider": response_dict.get("provider", "openrouter"),
+        "model": response_dict.get("model", ""),
     }
 
 
@@ -309,7 +369,11 @@ def _extract_receipt_fields(text: str) -> dict:
 
     line_items = []
     for line in lines:
-        if re.search(r"\d", line) and not re.search(r"total|amount due", line, re.IGNORECASE):
+        if re.search(r"\d", line) and not re.search(
+            r"total|amount due",
+            line,
+            re.IGNORECASE,
+        ):
             line_items.append(line)
         if len(line_items) >= 5:
             break
@@ -344,7 +408,9 @@ def _build_structured_result(task: str, raw_text: str) -> dict:
             )
 
         structured["extracted_text"] = raw_text
-        structured["summary"] = " | ".join(summary_parts) if summary_parts else raw_text[:240]
+        structured["summary"] = (
+            " | ".join(summary_parts) if summary_parts else raw_text[:240]
+        )
         structured["answer"] = structured["summary"]
         return structured
 
@@ -372,7 +438,7 @@ def run_vision_action(
 ) -> dict:
     task = detect_vision_task(user_prompt)
     if detected_language is None:
-        from chatbot import detect_language  # Local import to avoid circular import at module load
+        from chatbot import detect_language
 
         detected_language = detect_language(user_prompt)
 

@@ -1,0 +1,1 @@
+{"invoices": [{"invoice_id": "INV_10001", "vendor": "Acme Tools", "invoice_number": "AC-100", "date": "01/02/2020", "currency": "USD", "items": [{"sr_no": 1, "name": "Drill Bit Set", "quantity": 1, "rate": 50.0, "total": 50.0}], "summary": {"subtotal": 50.0, "tax": 0.0, "total_amount": 50.0}}]}
