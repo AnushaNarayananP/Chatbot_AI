@@ -26,6 +26,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from audio_handler import is_audio_file, transcribe_audio
 from chatbot import BOT_NAME, SYSTEM_PROMPT, get_default_text_model, route_chat_request
@@ -52,7 +53,11 @@ app = FastAPI(title="FriendlyBot API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        os.environ.get("RENDER_EXTERNAL_URL", ""),
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -335,3 +340,24 @@ def clear_rag_documents():
     """Clear all RAG documents."""
     cleared = clear_session_documents(RAG_SESSION_ID)
     return {"ok": cleared}
+
+
+# ---------------------------------------------------------------------------
+# Serve React Frontend (production)
+# ---------------------------------------------------------------------------
+
+FRONTEND_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
+
+if FRONTEND_DIR.is_dir():
+    # Serve static assets (JS, CSS, images)
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        """SPA fallback — serve index.html for all non-API routes."""
+        file_path = FRONTEND_DIR / full_path
+        if full_path and file_path.is_file():
+            from fastapi.responses import FileResponse
+
+            return FileResponse(file_path)
+        return FileResponse(FRONTEND_DIR / "index.html")
