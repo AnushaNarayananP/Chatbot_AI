@@ -551,7 +551,7 @@ def _extract_invoice_from_json_text(text: str) -> dict[str, Any] | None:
 def _extract_invoice_from_markdown_text(text: str) -> dict[str, Any] | None:
     normalized_text = _strip_markdown_label_text(text)
     invoice_number = _match_labeled_value(
-        r"(?:invoice\s*(?:number|no\.?|#)|inv\s*(?:number|no\.?|#))\s*[:#-]?\s*([A-Z0-9][A-Z0-9_/-]*)",
+        r"(?:invoice\s*(?:number|no\.?|#)|inv\s*(?:number|no\.?|#)|receipt\s*(?:number|no\.?|#))\s*[:#-]?\s*([A-Z0-9][A-Z0-9_/-]*)",
         normalized_text,
     )
     vendor = _match_labeled_value(
@@ -559,7 +559,7 @@ def _extract_invoice_from_markdown_text(text: str) -> dict[str, Any] | None:
         normalized_text,
     )
     date = _match_labeled_value(
-        r"invoice\s*date\s*:\s*([0-9]{1,2}[-/][A-Za-z]{3}[-/][0-9]{2,4}|[0-9]{1,2}[-/][0-9]{1,2}[-/][0-9]{2,4}|[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2})",
+        r"(?:invoice|receipt)\s*date\s*:\s*([0-9]{1,2}[-/][A-Za-z]{3}[-/][0-9]{2,4}|[0-9]{1,2}[-/][0-9]{1,2}[-/][0-9]{2,4}|[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2})",
         normalized_text,
     )
     subtotal = _match_labeled_value(
@@ -716,7 +716,7 @@ def _parse_invoice_item(line: str, sr_no: int) -> dict[str, Any] | None:
 def _build_common_invoice_json(text: str, receipt_fields: dict[str, Any]) -> dict[str, Any]:
     normalized_text = _strip_markdown_label_text(text)
     invoice_number = _match_labeled_value(
-        r"(?:invoice\s*(?:number|no\.?|#)|inv\s*(?:number|no\.?|#))\s*[:#-]?\s*([A-Z0-9][A-Z0-9_/-]*)",
+        r"(?:invoice\s*(?:number|no\.?|#)|inv\s*(?:number|no\.?|#)|receipt\s*(?:number|no\.?|#))\s*[:#-]?\s*([A-Z0-9][A-Z0-9_/-]*)",
         normalized_text,
     )
     vendor = _match_labeled_value(
@@ -724,7 +724,7 @@ def _build_common_invoice_json(text: str, receipt_fields: dict[str, Any]) -> dic
         normalized_text,
     ) or receipt_fields.get("merchant", "")
     date = _match_labeled_value(
-        r"invoice\s*date\s*:\s*([^\r\n]+)",
+        r"(?:invoice|receipt)\s*date\s*:\s*([^\r\n]+)",
         normalized_text,
     ) or receipt_fields.get("date", "")
     subtotal = _match_labeled_value(r"^\s*subtotal\b[^\d\r\n]*([0-9][0-9,]*(?:\.[0-9]{1,2})?)", text)

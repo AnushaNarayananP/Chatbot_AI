@@ -1,9 +1,24 @@
+# Core UI
 streamlit>=1.35.0
+
+# Image processing (vision_tools.py)
 Pillow>=10.0.0
+
+# Environment variable loading
 python-dotenv>=1.0.0
-pytest>=8.0.0
-pytest-cov>=5.0.0
-chromadb>=0.5.0
+
+# RAG document parsers
 pypdf>=4.0.0
 python-docx>=1.0.0
-tiktoken>=0.7.0
+
+# RAG vector store
+chromadb>=0.5.0
+
+# FastAPI backend (React UI mode)
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# Testing (not needed at runtime, but kept for CI)
+pytest>=8.0.0
+pytest-cov>=5.0.0

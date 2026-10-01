@@ -13,7 +13,7 @@ from openrouter_client import (
 
 MODEL_NAME = "google/gemini-2.5-flash"
 FALLBACK_MODEL_NAME = "anthropic/claude-sonnet-4"
-SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".jfif", ".webp"}
 EMPTY_OCR_ERROR = (
     "The OCR model returned no readable text. Try Gemini vision, "
     "a clearer image, or another vision model."
@@ -28,7 +28,7 @@ def guess_mime_type(file_name: str) -> str:
     extension = Path(file_name or "").suffix.lower()
     if extension == ".png":
         return "image/png"
-    if extension in {".jpg", ".jpeg"}:
+    if extension in {".jpg", ".jpeg", ".jfif"}:
         return "image/jpeg"
     if extension == ".webp":
         return "image/webp"
@@ -40,7 +40,7 @@ def encode_uploaded_image_to_data_url(uploaded_file) -> str:
         raise ValueError("No image file was provided.")
     if not is_supported_image_file(uploaded_file.name):
         raise ValueError(
-            "Unsupported image type. Please upload a PNG, JPG, JPEG, or WEBP image."
+            "Unsupported image type. Please upload a PNG, JPG, JPEG, JFIF, or WEBP image."
         )
 
     image_bytes = uploaded_file.getvalue()
@@ -64,7 +64,7 @@ def validate_image_url(image_url: str) -> str:
     path_extension = Path(parsed_url.path).suffix.lower()
     if path_extension and path_extension not in SUPPORTED_IMAGE_EXTENSIONS:
         raise ValueError(
-            "Image URL must point to a PNG, JPG, JPEG, or WEBP image."
+            "Image URL must point to a PNG, JPG, JPEG, JFIF, or WEBP image."
         )
 
     return cleaned_url
@@ -77,6 +77,8 @@ def detect_vision_task(user_prompt: str) -> str:
 
     ocr_keywords = {
         "extract text",
+        "extract data",
+        "extract details",
         "what is written",
         "read this",
         "bill",
@@ -150,26 +152,38 @@ def build_vision_instruction(user_prompt: str, detected_language: str, task: str
     user_intent = (user_prompt or "").strip() or "Please analyze this image."
     invoice_requested = any(
         keyword in user_intent.lower()
-        for keyword in ("invoice", "bill", "receipt", "store data", "save data")
+        for keyword in (
+            "invoice", "bill", "receipt", "store data", "save data",
+            "extract data", "extract details", "extract", "structured data",
+            "data", "store", "save",
+        )
     )
     invoice_json_instruction = ""
-    if task == "ocr" and invoice_requested:
+    if invoice_requested:
         invoice_json_instruction = (
-            " If this is an invoice, after the readable text include one fenced JSON block "
+            " If this is an invoice, receipt, bill, or purchase order, "
+            "after the readable text include one fenced JSON block "
             "with this exact shape: "
-            '{"invoice_id":"","vendor":"","invoice_number":"","date":"","currency":"",'
+            '{"invoice_id":"","vendor":"","invoice_number":"","date":"","currency":"",'\
             '"items":[{"sr_no":0,"name":"","quantity":0,"rate":0.0,"total":0.0}],'
             '"summary":{"subtotal":0.0,"tax":0.0,"total_amount":0.0}}. '
-            "Before the JSON, transcribe these invoice fields verbatim when visible: "
-            "Invoice No, Invoice Date, each product row, Subtotal/Taxable Value, "
-            "IGST/CGST/SGST tax amount, and Grand Total/Total. "
-            "For invoice_number, use only the value printed next to Invoice No / Invoice Number; "
-            "never use Challan No, E-Way Bill No, PAN, GSTIN, Transport ID, phone, or bank fields. "
-            "Transcribe the invoice item table rows exactly, especially columns like "
-            "Sr No, Name of Product / Service, Qty, Rate, and Taxable Value. "
-            "Use only values clearly visible in the invoice. Do not use address, PAN, GSTIN, "
-            "phone, bank, or terms lines as item names. Put each product/service row from the "
-            "invoice item table into items."
+            "Before the JSON, transcribe these fields verbatim when visible: "
+            "Invoice No / Receipt # / Receipt No, Invoice Date / Receipt Date, "
+            "each product/item row with description, quantity, unit price, and amount, "
+            "Subtotal/Taxable Value, any tax (Sales Tax / IGST / CGST / SGST) amount, "
+            "and Grand Total / Total. "
+            "For vendor, use the company or person name at the top of the document "
+            "(the seller/issuer, NOT the Bill To / Ship To recipient). "
+            "For invoice_number, use the value printed next to Invoice No / Invoice Number / "
+            "Receipt # / Receipt No; never use Challan No, E-Way Bill No, PAN, GSTIN, "
+            "Transport ID, P.O.#, phone, or bank account fields. "
+            "For date, use the Invoice Date or Receipt Date value. "
+            "Transcribe the item table rows exactly, especially columns like "
+            "QTY / Sr No, Description / Name of Product / Service, Unit Price / Rate, "
+            "and Amount / Taxable Value. "
+            "Use only values clearly visible in the document. Do not use address, PAN, GSTIN, "
+            "phone, bank, or terms lines as item names. Put each product/service/labor row "
+            "from the item table into items."
         )
 
     return (
