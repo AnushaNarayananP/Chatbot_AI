@@ -25,7 +25,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from audio_handler import is_audio_file, transcribe_audio
@@ -357,7 +357,5 @@ if FRONTEND_DIR.is_dir():
         """SPA fallback — serve index.html for all non-API routes."""
         file_path = FRONTEND_DIR / full_path
         if full_path and file_path.is_file():
-            from fastapi.responses import FileResponse
-
             return FileResponse(file_path)
         return FileResponse(FRONTEND_DIR / "index.html")
